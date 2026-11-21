@@ -157,7 +157,7 @@ void llama_model_inkling2::load_arch_tensors(llama_model_loader &) {
 }
 
 std::unique_ptr<llm_graph_context> llama_model_inkling2::build_arch_graph(const llm_graph_params & params) const {
-    return std::make_unique<graph>(params);
+    return std::make_unique<graph>(*this, params);
 }
 
 // scale each row down to an L2 norm of at most threshold, after the optional per-channel scale
@@ -448,7 +448,7 @@ void llama_model_inkling2::graph::build_output(ggml_tensor * cur, const std::vec
     res->t_logits = cur;
 }
 
-llama_model_inkling2::graph::graph(const llm_graph_params & params) : llm_graph_context(params) {
+llama_model_inkling2::graph::graph(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params), model(model) {
     ggml_tensor * cur = build_inputs();
 
     std::vector<ggml_tensor *> blocks;

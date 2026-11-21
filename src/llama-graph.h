@@ -1434,6 +1434,15 @@ struct llm_graph_context {
 
     llm_graph_input_rs * build_rs_inp() const;
 
+    // store the conv history of the ubatch cells, the last n_cols columns of conv_x {n_cols + n_seq_tokens, channels, n_seqs},
+    // at byte offset offs of each row of s, and with n_rs_seq > 0 once per rollback slot of this ubatch
+    void build_conv_state_store(
+            llm_graph_input_rs * inp,
+            ggml_tensor * s,
+            ggml_tensor * conv_x,
+                int64_t   n_cols,
+                 size_t   offs) const;
+
     ggml_tensor * build_rs(
             llm_graph_input_rs * inp,
             ggml_tensor * s,
