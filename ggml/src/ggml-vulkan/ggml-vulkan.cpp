@@ -15672,6 +15672,12 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (op->src[3] && op->src[3]->type != GGML_TYPE_F16) {
                     return false;
                 }
+                // per-head masks (e.g. inkling2's relative bias) need upstream's multi_head_mask path,
+                // which this backend does not have yet: accepting the op would read head 0's mask for
+                // every head and compute wrong attention silently. use --no-flash-attn until then
+                if (op->src[3] && op->src[3]->ne[2] > 1) {
+                    return false;
+                }
                 auto fa_kv_ok = [](ggml_type t) {
                     switch (t) {
                     case GGML_TYPE_F32:
