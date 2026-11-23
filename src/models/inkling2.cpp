@@ -446,6 +446,9 @@ void llama_model_inkling2::graph::build_output(ggml_tensor * cur, const std::vec
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;
+
+    // the fork has no build_logits() pass: expand the tail here like the other models do
+    ggml_build_forward_expand(gf, cur);
 }
 
 llama_model_inkling2::graph::graph(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params), model(model) {
