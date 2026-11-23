@@ -1293,12 +1293,19 @@ bool llama_prec_policy::apply(ggml_tensor * res) const {
         return false;
     }
 
-    const auto it = prec_src1.find(res->src[0]);
-    if (it == prec_src1.end()) {
-        return false;
+    bool applied = false;
+
+    const auto it_acc = prec_acc.find(res->src[0]);
+    if (it_acc != prec_acc.end()) {
+        applied |= ggml_prec_set_acc(res, it_acc->second);
     }
 
-    return ggml_prec_set_src(res, it->second, 1);
+    const auto it_src1 = prec_src1.find(res->src[0]);
+    if (it_src1 != prec_src1.end()) {
+        applied |= ggml_prec_set_src(res, it_src1->second, 1);
+    }
+
+    return applied;
 }
 
 void llama_prec_policy::load(llama_model_loader & ml, const llama_model & model) {
