@@ -3049,7 +3049,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * v_mla,
              int64_t   n_kv_max,
                float   kq_scale,
-                 int   il) const {
+                 int   il,
+         ggml_tensor * bias_table,
+         ggml_tensor * bias_indices) const {
     const bool v_trans = v->nb[1] > v->nb[2];
 
     // split the batch into streams if needed
@@ -3063,6 +3065,24 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     q = ggml_permute(ctx0, q, 0, 2, 1, 3);
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
+
+    // materialize the indexed bias as a dense per-head mask (fallback for backends
+    // that do not support the indexed bias on FLASH_ATTN_EXT)
+    auto dense_bias_mask = [&]() {
+        ggml_tensor * table = ggml_cont(ctx0, ggml_permute(ctx0, bias_table, 1, 0, 2, 3));
+        ggml_tensor * bias = ggml_get_rows(ctx0, table, bias_indices);
+        bias = ggml_reshape_4d(ctx0, bias, q->ne[2], bias_indices->ne[0], q->ne[1], n_stream);
+        bias = ggml_cont(ctx0, ggml_permute(ctx0, bias, 2, 0, 1, 3));
+        cb(bias, "kq_b", il);
+
+        ggml_tensor * mask = kq_mask->type == GGML_TYPE_F32 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+        mask = ggml_add(ctx0, bias, mask);
+        if (cparams.flash_attn) {
+            mask = ggml_cast(ctx0, mask, GGML_TYPE_F16);
+        }
+        cb(mask, "kq_mask_rel_pos", il);
+        return mask;
+    };
 
     ggml_tensor * cur;
 
@@ -3092,6 +3112,18 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
         ggml_prec_set_acc(cur, GGML_PREC_F32);
 
+        if (bias_table) {
+            if (!cparams.offload_kqv) {
+                // attention is pinned to the CPU backend (see the offload_kqv pin below), which
+                // supports the indexed bias
+                ggml_flash_attn_ext_add_indexed_bias(cur, bias_table, bias_indices);
+            } else {
+                // the GPU backends of this fork do not support the indexed bias yet (CUDA/HIP/Vulkan
+                // reject it in supports_op): keep ordinary flash attention with the dense mask
+                cur->src[3] = dense_bias_mask();
+            }
+        }
+
         if (v_mla) {
 #if 0
             // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
@@ -3111,6 +3143,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
     } else {
+        if (bias_table) {
+            kq_mask = dense_bias_mask();
+        }
         ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);
         cb(kq, "kq", il);
 
@@ -4249,7 +4284,7 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * q_cur,
         ggml_tensor * k_cur,
         ggml_tensor * v_cur,
-        ggml_tensor * kq_b,
+        ggml_tensor * bias_table,
         ggml_tensor * sinks,
             float     kq_scale,
             int       il) const {
@@ -4299,22 +4334,23 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
     }
 
-    // a mask per head, in the dense layout of the input mask, which flash attention takes in F16
+    // the rel-pos bias reaches the attention op either as an indexed bias on FLASH_ATTN_EXT or,
+    // for backends without indexed-bias support, materialized into the mask by build_attn_mha
     ggml_tensor * kq_mask = is_swa ? inp_attn->get_kq_mask_swa() : inp_attn->get_kq_mask();
     if (kq_mask->type != GGML_TYPE_F32) {
         kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
     }
-    kq_mask = ggml_add(ctx0, kq_b, kq_mask);
     if (cparams.flash_attn) {
         kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F16);
     }
-    cb(kq_mask, "kq_mask_rel_pos", il);
+
+    ggml_tensor * bias_indices = bias_table ? (is_swa ? inp->self_rel_pos_swa : inp->self_rel_pos) : nullptr;
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask, sinks, nullptr, 0, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask, sinks, nullptr, 0, kq_scale, il, bias_table, bias_indices);
     cb(cur, "kqv_out", il);
 
     if (v_rot) {

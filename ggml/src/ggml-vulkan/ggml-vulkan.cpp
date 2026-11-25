@@ -15678,6 +15678,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (op->src[3] && op->src[3]->ne[2] > 1) {
                     return false;
                 }
+                // indexed bias (inkling2 rel-pos table) is not supported yet: fall back to the dense mask
+                if (ggml_flash_attn_ext_has_indexed_bias(op)) {
+                    return false;
+                }
                 auto fa_kv_ok = [](ggml_type t) {
                     switch (t) {
                     case GGML_TYPE_F32:
