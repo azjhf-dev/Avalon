@@ -765,6 +765,35 @@ struct llama_model {
     struct ggml_tensor * dspark_markov_ctx_mix   = nullptr; // rnn markov head: f_rnn from target features
     struct ggml_tensor * dspark_markov_ctx_norm  = nullptr;
 
+    struct ggml_tensor * lilicorr_token_proj          = nullptr;
+    struct ggml_tensor * lilicorr_token_proj_b        = nullptr;
+    struct ggml_tensor * lilicorr_token_proj_s        = nullptr;
+    struct ggml_tensor * lilicorr_pass_hidden_proj    = nullptr;
+    struct ggml_tensor * lilicorr_pass_hidden_proj_b  = nullptr;
+    struct ggml_tensor * lilicorr_pass_hidden_proj_s  = nullptr;
+    struct ggml_tensor * lilicorr_feature_norm        = nullptr;
+    struct ggml_tensor * lilicorr_feature_norm_b      = nullptr;
+    struct ggml_tensor * lilicorr_feature_mlp_1       = nullptr;
+    struct ggml_tensor * lilicorr_feature_mlp_1_b     = nullptr;
+    struct ggml_tensor * lilicorr_feature_mlp_3       = nullptr;
+    struct ggml_tensor * lilicorr_feature_mlp_3_b     = nullptr;
+    struct ggml_tensor * lilicorr_slot_embedding      = nullptr;
+    struct ggml_tensor * lilicorr_rank_embedding      = nullptr;
+    struct ggml_tensor * lilicorr_attention_bias      = nullptr;
+    struct ggml_tensor * lilicorr_context_proj        = nullptr;
+    struct ggml_tensor * lilicorr_context_proj_b      = nullptr;
+    struct ggml_tensor * lilicorr_context_proj_s      = nullptr;
+    struct ggml_tensor * lilicorr_output_norm         = nullptr;
+    struct ggml_tensor * lilicorr_anchor_norm         = nullptr;
+    struct ggml_tensor * lilicorr_factor_input_proj   = nullptr;
+    struct ggml_tensor * lilicorr_factor_input_proj_b = nullptr;
+    struct ggml_tensor * lilicorr_out_head            = nullptr;
+    struct ggml_tensor * lilicorr_out_head_b          = nullptr;
+    struct ggml_tensor * lilicorr_in_head             = nullptr;
+    struct ggml_tensor * lilicorr_in_head_b           = nullptr;
+    struct ggml_tensor * lilicorr_anchor_out_head     = nullptr;
+    struct ggml_tensor * lilicorr_anchor_out_head_b   = nullptr;
+
     struct ggml_tensor * dflash_selector_prev   = nullptr;
     struct ggml_tensor * dflash_selector_next   = nullptr;
     struct ggml_tensor * dflash_selector_hidden = nullptr;

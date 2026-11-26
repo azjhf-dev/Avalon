@@ -431,11 +431,6 @@ llama_model_dflash::graph_dspark::graph_dspark(const llama_model & model, const 
         inp_tokens = build_inp_tokens();
     }
 
-    // the whole block shares the mask row of its first query (the anchor)
-    if (model.dspark_mask_embd && use_iswa) {
-        inp_attn_iswa->self_attn_mask_swa.block_uniform = true;
-    }
-
     ggml_tensor * cur = build_layers(inp_tokens);
 
     build_logits(cur);
@@ -481,8 +476,8 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
             kv = ggml_rope_set_offset(kv, n_embd_head_nope);
             cb(kv, "kv_injected", il);
 
-            if (inp_attn->self_k_rot_swa[il]) {
-                kv = llama_mul_mat_hadamard(ctx0, kv, inp_attn->self_k_rot_swa[il]);
+            if (inp_attn->self_k_rot_swa) {
+                kv = llama_mul_mat_hadamard(ctx0, kv, inp_attn->self_k_rot_swa);
             }
             ggml_build_forward_expand(gf, inp_attn->mctx->get_swa()->cpy_k(ctx0, kv, inp_attn->get_k_idxs_swa(), il));
         }
@@ -516,29 +511,30 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
         const auto & layer = model.layers[il];
 
         ggml_tensor * residual = inpL;
-        hc_pre attn_hc = build_hc_pre(inpL,
+        ggml_tensor * post = nullptr;
+        ggml_tensor * comb = nullptr;
+
+        ggml_tensor * cur = build_hc_pre(inpL,
                 layer.hc_attn_fn,
                 layer.hc_attn_scale,
                 layer.hc_attn_base,
-                il);
-        ggml_tensor * cur = attn_hc.cur;
+                &post, &comb, il);
         cb(cur, "hc_attn_pre", il);
 
         cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "attn_norm", il);
 
-        cur = build_attention(inp_attn, cur, inp_pos, il);
+        cur = build_attention(model, inp_attn, cur, inp_pos, il);
 
-        inpL = build_hc_post(cur, residual, attn_hc.post, attn_hc.comb, il);
+        inpL = build_hc_post(cur, residual, post, comb, il);
         cb(inpL, "hc_attn_post", il);
 
         residual = inpL;
-        hc_pre ffn_hc = build_hc_pre(inpL,
+        cur = build_hc_pre(inpL,
                 layer.hc_ffn_fn,
                 layer.hc_ffn_scale,
                 layer.hc_ffn_base,
-                il);
-        cur = ffn_hc.cur;
+                &post, &comb, il);
         cb(cur, "hc_ffn_pre", il);
 
         cur = build_norm(cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
@@ -567,7 +563,7 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
 
-        inpL = build_hc_post(cur, residual, ffn_hc.post, ffn_hc.comb, il);
+        inpL = build_hc_post(cur, residual, post, comb, il);
         cb(inpL, "l_out", il);
     }
 
@@ -589,212 +585,3 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
         build_dspark_markov_head(*this, model, inp_tokens);
     }
 }
-
-// DeepSeek-V4.1 DSpark decoder (mtp.0..2), dual-mode by batch type like graph_dsv4:
-//   * embd batch  -> writes every stage's kv_norm(wkv(main_proj(target features))) into its window ring
-//   * token batch -> [anchor, noise...] block through the stages, single-pass mHC, no per-head q norm
-// window of a block = window of its first query, see n_swa
-
-) {
-    const int64_t n_embd_head      = hparams.n_embd_head_k();
-    const int64_t n_embd_head_rope = hparams.n_rot();
-    const int64_t n_embd_head_nope = n_embd_head - n_embd_head_rope;
-
-    GGML_ASSERT(hparams.dsv4_hc_single_pass);
-
-    ggml_tensor * inp_pos = build_inp_pos();
-
-    llm_graph_input_attn_k_iswa * inp_attn = build_attn_inp_k_iswa();
-
-    // ratio-0 layers: plain rope at rope_theta, no YaRN (original_seq_len 0)
-    const auto rope = [&](ggml_tensor * t) {
-        t = ggml_rope_ext(ctx0, t, inp_pos, nullptr, n_embd_head_rope, rope_type, 0,
-                freq_base, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-        return ggml_rope_set_offset(t, n_embd_head_nope);
-    };
-
-    ASSERT_EMBD_OR_TOKEN(ubatch);
-    if (ubatch.embd || ubatch.embd_row) {
-        ggml_tensor * inp_g = build_inject_inp(*this, model);
-        cb(inp_g, "main_x", -1);
-
-        for (int il = 0; il < n_layer; ++il) {
-            const auto & layer = model.layers[il];
-
-            ggml_tensor * kv = build_lora_mm(layer.wkv, inp_g);
-            kv = build_norm(kv, layer.attn_kv_norm, nullptr, LLM_NORM_RMS, il);
-            kv = ggml_reshape_3d(ctx0, kv, n_embd_head, 1, n_tokens);
-            kv = rope(kv);
-            cb(kv, "kv_injected", il);
-
-            if (inp_attn->self_k_rot_swa[il]) {
-                kv = llama_mul_mat_hadamard(ctx0, kv, inp_attn->self_k_rot_swa[il]);
-            }
-            ggml_build_forward_expand(gf, inp_attn->mctx->get_swa()->cpy_k(ctx0, kv, inp_attn->get_k_idxs_swa(), il));
-        }
-
-        res->t_embd = inp_g;
-
-        ggml_build_forward_expand(gf, inp_g);
-        return;
-    }
-
-    ggml_tensor * tok_embd = get_tok_embd(*this, model);
-
-    auto inp = std::make_unique<llm_graph_input_embd>(n_embd);
-
-    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
-    ggml_set_input(inp->tokens);
-
-    ggml_tensor * inp_tokens = inp->tokens;
-
-    ggml_tensor * inpL = ggml_get_rows(ctx0, tok_embd, inp->tokens);
-    cb(inpL, "inp_noise_embd", -1);
-
-    res->add_input(std::move(inp));
-
-    const int64_t hc            = hparams.dsv4_hc_mult;
-    const int64_t n_groups      = hparams.dsv4_o_group_count;
-    const int64_t n_heads_group = n_head / n_groups;
-    const int64_t o_lora_rank   = hparams.dsv4_o_lora_rank;
-    const int64_t o_group_dim   = n_heads_group*n_embd_head;
-    const float   kq_scale      = 1.0f/sqrtf(float(n_embd_head));
-
-    GGML_ASSERT(n_embd_head == n_embd_head_v);
-    GGML_ASSERT(n_head % n_groups == 0);
-
-    inpL = ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens);
-    inpL = ggml_repeat_4d(ctx0, inpL, n_embd, hc, n_tokens, 1);
-    cb(inpL, "hc_init", -1);
-
-    // the whole block shares the mask row of its first query (the anchor)
-    inp_attn->self_attn_mask_swa.block_uniform = true;
-
-    ggml_tensor * pre_prev = nullptr;
-
-    for (int il = 0; il < n_layer; ++il) {
-        const auto & layer = model.layers[il];
-
-        ggml_tensor * residual = inpL;
-        const hc_mixes attn_mix = build_hc_mixes(inpL, layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, il);
-
-        ggml_tensor * cur;
-        if (pre_prev == nullptr) {
-            // identity pre-mix of the first stage: copy 0
-            cur = ggml_cont(ctx0, ggml_view_2d(ctx0, inpL, n_embd, n_tokens, inpL->nb[2], 0));
-        } else {
-            cur = build_hc_pre(inpL, pre_prev, il);
-        }
-        cb(cur, "hc_attn_pre", il);
-
-        cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
-        cb(cur, "attn_norm", il);
-
-        // non-causal draft context: block queries see the main-KV ring plus every block key
-        {
-            ggml_tensor * qr = build_lora_mm(layer.wq_a, cur);
-            qr = build_norm(qr, layer.attn_q_a_norm, nullptr, LLM_NORM_RMS, il);
-            cb(qr, "qr_norm", il);
-
-            ggml_tensor * q = build_lora_mm(layer.wq_b, qr);
-            q = ggml_reshape_3d(ctx0, q, n_embd_head, n_head, n_tokens);
-            q = rope(q);
-            cb(q, "q", il);
-
-            ggml_tensor * kv = build_lora_mm(layer.wkv, cur);
-            kv = build_norm(kv, layer.attn_kv_norm, nullptr, LLM_NORM_RMS, il);
-            kv = ggml_reshape_3d(ctx0, kv, n_embd_head, 1, n_tokens);
-            kv = rope(kv);
-            cb(kv, "kv", il);
-
-            ggml_tensor * out = build_attn(inp_attn,
-                    nullptr, nullptr, nullptr,
-                    q, kv, kv,
-                    nullptr, layer.attn_sinks, nullptr,
-                    kq_scale, il);
-            cb(out, "attn_raw", il);
-
-            out = ggml_reshape_3d(ctx0, out, n_embd_head, n_head, n_tokens);
-            out = ggml_rope_ext_back(ctx0, out, inp_pos, nullptr, n_embd_head_rope, rope_type, 0,
-                    freq_base, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-            out = ggml_rope_set_offset(out, n_embd_head_nope);
-            cb(out, "attn_derope", il);
-
-            out = ggml_reshape_3d(ctx0, out, o_group_dim, n_groups, n_tokens);
-            out = ggml_permute(ctx0, out, 0, 2, 1, 3);
-            ggml_tensor * oa = ggml_mul_mat(ctx0, layer.wo_a, out);
-            cb(oa, "attn_wo_a", il);
-            oa = ggml_permute(ctx0, oa, 0, 2, 1, 3);
-            oa = ggml_cont_2d(ctx0, oa, o_lora_rank*n_groups, n_tokens);
-
-            cur = build_lora_mm(layer.wo_b, oa);
-            cb(cur, "attn_out", il);
-        }
-
-        inpL = build_hc_post(cur, residual, attn_mix.post, attn_mix.comb, il);
-        cb(inpL, "hc_attn_post", il);
-
-        residual = inpL;
-        const hc_mixes ffn_mix = build_hc_mixes(inpL, layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, il);
-        pre_prev = ffn_mix.pre;
-
-        cur = build_hc_pre(inpL, attn_mix.pre, il);
-        cb(cur, "hc_ffn_pre", il);
-
-        cur = build_norm(cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
-        cb(cur, "ffn_norm", il);
-
-        ggml_tensor * moe_out = build_moe_ffn(cur,
-                layer.ffn_gate_inp,
-                layer.ffn_up_exps,
-                layer.ffn_gate_exps,
-                layer.ffn_down_exps,
-                layer.ffn_exp_probs_b,
-                n_expert, hparams.n_expert_used(),
-                LLM_FFN_SILU, hparams.expert_weights_norm,
-                hparams.expert_weights_scale,
-                (llama_expert_gating_func_type) hparams.expert_gating_func,
-                il);
-        cb(moe_out, "ffn_moe_out", il);
-
-        ggml_tensor * ffn_shexp = build_ffn(cur,
-                layer.ffn_up_shexp, nullptr, nullptr,
-                layer.ffn_gate_shexp, nullptr, nullptr,
-                layer.ffn_down_shexp, nullptr, nullptr,
-                nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
-        cb(ffn_shexp, "ffn_shexp", il);
-
-        cur = ggml_add(ctx0, moe_out, ffn_shexp);
-        cb(cur, "ffn_out", il);
-
-        inpL = build_hc_post(cur, residual, ffn_mix.post, ffn_mix.comb, il);
-
-        ggml_tensor * l_out = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_tokens);
-        cb(l_out, "l_out", il);
-        ggml_build_forward_expand(gf, l_out);
-    }
-
-    // no hc_head: collapse with the last FFN's pre-mix
-    ggml_tensor * cur = build_hc_pre(inpL, pre_prev, -1);
-    cb(cur, "hc_out", -1);
-
-    // confidence head takes the un-normed collapsed state
-    res->t_embd = cur;
-
-    cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
-    cb(cur, "result_norm", -1);
-
-    const auto [output, output_s] = get_lm_head(*this, model);
-    cur = build_lora_mm(output, cur, output_s);
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
-
-    if (model.dspark_markov_w1) {
-        build_dspark_markov_head(*this, model, inp_tokens);
-    }
-}
-
-// Mistral Large 4 DSpark, dual-mode like graph_dsv41:
-// - embd batch: write latent K of target_norm(fc(features)) to the cache, no attn norm
-// - token batch: decode [anchor, mask_1, ...] block, non-causal
-
