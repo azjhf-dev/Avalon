@@ -207,6 +207,15 @@ public:
     // TODO: support embeddings if needed in the future
     llama_ubatch ubatch_reserve(uint32_t n_seq_tokens, uint32_t n_seqs);
 
+    // the largest ubatch the next split may make: n_ubatch, or the equal share of the run up to the next break
+    uint32_t break_cap(uint32_t n_ubatch) const;
+
+    // batch indices before which a ubatch must end (a state snapshot, llama_set_seq_snapshots), single-sequence batches
+    // only; between two breaks the ubatches get equal sizes. Cleared by init()
+    void set_breaks(std::vector<int32_t> idxs);
+    // one sequence: the batch in equal parts of at most n_ubatch even without breaks (a ubatch lowered by llama_context::ubatch_fit)
+    void set_equal_parts(bool on) { equal_parts = on; }
+
 private:
     void clear();
 
@@ -227,15 +236,6 @@ private:
     const uint32_t n_pos_per_embd;
 
     const bool allow_mixed;
-
-    // the largest ubatch the next split may make: n_ubatch, or the equal share of the run up to the next break
-    uint32_t break_cap(uint32_t n_ubatch) const;
-
-    // batch indices before which a ubatch must end (a state snapshot, llama_set_seq_snapshots), single-sequence batches
-    // only; between two breaks the ubatches get equal sizes. Cleared by init()
-    void set_breaks(std::vector<int32_t> idxs);
-    // one sequence: the batch in equal parts of at most n_ubatch even without breaks (a ubatch lowered by llama_context::ubatch_fit)
-    void set_equal_parts(bool on) { equal_parts = on; }
 
     std::vector<int32_t> breaks;
     bool                 equal_parts = false;   // set_equal_parts
