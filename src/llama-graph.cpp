@@ -3113,15 +3113,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_prec_set_acc(cur, GGML_PREC_F32);
 
         if (bias_table) {
-            if (!cparams.offload_kqv) {
-                // attention is pinned to the CPU backend (see the offload_kqv pin below), which
-                // supports the indexed bias
-                ggml_flash_attn_ext_add_indexed_bias(cur, bias_table, bias_indices);
-            } else {
-                // the GPU backends of this fork do not support the indexed bias yet (CUDA/HIP/Vulkan
-                // reject it in supports_op): keep ordinary flash attention with the dense mask
-                cur->src[3] = dense_bias_mask();
-            }
+            // indexed bias: CUDA tile/vec kernels (head sizes 128, and 64 without softcap) and the
+            // CPU backend implement it; anything else falls back per the scheduler's supports_op
+            ggml_flash_attn_ext_add_indexed_bias(cur, bias_table, bias_indices);
         }
 
         if (v_mla) {

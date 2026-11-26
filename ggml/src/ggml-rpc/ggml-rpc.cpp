@@ -1487,6 +1487,9 @@ bool rpc_server::get_alloc_size(const rpc_msg_get_alloc_size_req & request, rpc_
             tensor->src[i] = deserialize_tensor(ctx, &request.srcs[i]);
         }
     }
+    if (tensor->op == GGML_OP_FLASH_ATTN_EXT && !ggml_validate_flash_attn_ext_indexed_bias(tensor)) {
+        return false;
+    }
 
     LOG_DBG2("[%s] device: %u, tensor: %s, buffer: %p, data: %p\n", __func__, dev_id, rpc_log_format_tensor(tensor).c_str(),
              (void*)tensor->buffer, tensor->data);
@@ -2184,6 +2187,10 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
             return false;
         }
         if (graph->nodes[i] != nullptr) {
+            if (graph->nodes[i]->op == GGML_OP_FLASH_ATTN_EXT && !ggml_validate_flash_attn_ext_indexed_bias(graph->nodes[i])) {
+                LOG_ERROR("[%s] graph node %u has invalid indexed bias tensors\n", __func__, i);
+                return false;
+            }
             LOG_DBG3("[%s] node %u: id=%" PRId64 ", %s\n", __func__, i, id, rpc_log_format_tensor(graph->nodes[i]).c_str());
             const size_t hash_pos = ggml_hash_insert(&graph->visited_hash_set, graph->nodes[i]);
             graph->use_counts[hash_pos] = tensor_ptrs.at(id)->use_count;
