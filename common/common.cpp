@@ -2307,7 +2307,7 @@ void common_batch::clear() {
 }
 
 int32_t common_batch::add(llama_token id, llama_pos pos, llama_seq_id seq_id, bool output) {
-    tokens.push_back({ id, { pos, 0, 0, 0 }, seq_id, output, { nullptr, 0, 0 }, {} });
+    tokens.push_back({ id, { pos, 0, 0, 0 }, seq_id, output, { nullptr, 0, 0 }, { nullptr, 0, 0 }, {} });
     return size() - 1;
 }
 
@@ -2345,8 +2345,34 @@ bool common_batch::set_embd(int32_t idx, llama_embd embd) {
     return true;
 }
 
+bool common_batch::set_embd_state(int32_t idx, llama_embd state) {
+    if (idx < 0 || idx >= size() || tokens[idx].state.data != nullptr) {
+        return false;
+    }
+    tokens[idx].state = state;
+    return true;
+}
+
+bool common_batch::set_embd_state_row(int32_t idx, int32_t row) {
+    if (idx < 0 || idx >= size() || row < 0 || tokens[idx].state.data != nullptr || tokens[idx].state_row >= 0) {
+        return false;
+    }
+    tokens[idx].state_row = row;
+    return true;
+}
+
 int32_t common_batch::add_embd(llama_embd embd, const llama_pos * pos, llama_seq_id seq_id, bool output) {
-    token t = { LLAMA_TOKEN_NULL, { 0, 0, 0, 0 }, seq_id, output, embd, {} };
+    token t = { LLAMA_TOKEN_NULL, { 0, 0, 0, 0 }, seq_id, output, embd, { nullptr, 0, 0 }, {} };
+    for (int32_t j = 0; j < n_pos; ++j) {
+        t.pos[j] = pos[j];
+    }
+    tokens.push_back(t);
+    return size() - 1;
+}
+
+int32_t common_batch::add_embd_row(int32_t row, const llama_pos * pos, llama_seq_id seq_id, bool output) {
+    token t = { LLAMA_TOKEN_NULL, { 0, 0, 0, 0 }, seq_id, output, { nullptr, 0, 0 }, { nullptr, 0, 0 }, {} };
+    t.embd_row = row;
     for (int32_t j = 0; j < n_pos; ++j) {
         t.pos[j] = pos[j];
     }
@@ -2374,6 +2400,12 @@ llama_batch_ext * common_batch::get_sub_batch(int32_t off, int32_t n) {
             if (t.embd.data && !llama_batch_ext_set_embd_token(res, idx, t.embd)) {
                 GGML_ABORT("%s: failed to set the embedding of token %d at index %d\n", __func__, t.id, i);
             }
+        } else if (t.embd_row >= 0) {
+            idx = llama_batch_ext_add_embd_row(res, t.seq_id, t.embd_row);
+            if (idx < 0) {
+                GGML_ABORT("%s: failed to add embd row %d at index %d (error %d, n = %d)\n", __func__, t.embd_row, i, idx, n);
+            }
+            llama_batch_ext_set_pos(res, idx, t.pos.data());
         } else {
             idx = llama_batch_ext_add_embd(res, t.seq_id, t.embd);
             if (idx < 0) {
@@ -2393,6 +2425,15 @@ llama_batch_ext * common_batch::get_sub_batch(int32_t off, int32_t n) {
         }
         if (t.decision_order != 0) {
             llama_batch_ext_set_decision_order(res, idx, (llama_decision_order) t.decision_order);
+        }
+        if (t.state.data) {
+            llama_batch_ext_set_embd_state(res, idx, t.state); // contexts without a state input ignore it
+        }
+        if (t.state_row >= 0 && !llama_batch_ext_set_embd_state_row(res, idx, t.state_row)) {
+            GGML_ABORT("%s: failed to set the state row of the entry at index %d\n", __func__, i);
+        }
+        if (t.decision_group != 0 && !llama_batch_ext_set_decision_group(res, idx, t.decision_group)) {
+            GGML_ABORT("%s: failed to set the decision group of the entry at index %d\n", __func__, i);
         }
     }
 

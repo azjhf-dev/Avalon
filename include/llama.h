@@ -227,6 +227,15 @@ extern "C" {
         LLAMA_CONTEXT_TYPE_MTP     = 1,
     };
 
+    // the head on the block of a DFlash draft model
+    enum llama_dflash_variant {
+        LLAMA_DFLASH_VARIANT_NONE     = -1, // not a DFlash draft model
+        LLAMA_DFLASH_VARIANT_DFLASH   = 0,
+        LLAMA_DFLASH_VARIANT_DFLASH2  = 1,
+        LLAMA_DFLASH_VARIANT_DSPARK   = 2,
+        LLAMA_DFLASH_VARIANT_LILICORR = 3,
+    };
+
     enum llama_moe_cache_mode {
         LLAMA_MOE_CACHE_MODE_UNSPECIFIED = -1,
         LLAMA_MOE_CACHE_MODE_OFF = 0,
@@ -1125,6 +1134,15 @@ extern "C" {
                                 struct llama_batch_ext * batch,
                                                int32_t   idx,
                                      struct llama_embd   embd);
+
+    // Add an entry whose embedding is row `row` of the layer input device buffer of ctx_other.
+    // All entries of the batch must be of this kind. Positions are set with llama_batch_ext_set_pos(), n_pos_per_embd of them.
+    // Returns the batch index (>= 0), or the llama_batch_ext_add() error codes.
+    LLAMA_API int32_t llama_batch_ext_add_embd_row(struct llama_batch_ext * batch, llama_seq_id seq_id, int32_t row);
+
+    // The state of entry idx is row `row` of the h_nextn device buffer of the context set with llama_set_ctx_state_src().
+    // All entries of a batch have a state row, or none.
+    LLAMA_API bool llama_batch_ext_set_embd_state_row(struct llama_batch_ext * batch, int32_t idx, int32_t row);
 
     // Set if output embeddings should be available for the token at index idx in the batch
     // Note: for now, this is equivalent to setting the output logits

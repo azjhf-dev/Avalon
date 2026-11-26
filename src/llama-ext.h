@@ -167,6 +167,7 @@ enum llama_decision_order {
 };
 // The embeddings output has one value per entry: row i is the score of option i
 LLAMA_API bool llama_batch_ext_set_decision_order(struct llama_batch_ext * batch, int32_t idx, enum llama_decision_order order);
+LLAMA_API bool llama_batch_ext_set_decision_group(struct llama_batch_ext * batch, int32_t idx, int32_t group);
 
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
@@ -177,6 +178,15 @@ LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int
 
 // Set whether the context outputs the input embeddings of a specific layer
 LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
+
+// Write the enabled layer inputs to a device buffer [n_layer_inp*n_embd, n_batch] instead of host memory.
+// Row r holds the token at batch index r, layers in ascending layer id order.
+// NOTE: this fork has no layer input device buffer; the call is accepted and ignored, llama_supports_embd_row() is false
+LLAMA_API void llama_set_embeddings_layer_inp_dev(struct llama_context * ctx, bool value);
+
+// Whether decode accepts entries added with llama_batch_ext_add_embd_row()
+// (needs a DFlash/DSpark decoder context whose ctx_other has a layer input device buffer)
+LLAMA_API bool llama_supports_embd_row(const struct llama_context * ctx);
 
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
@@ -189,6 +199,9 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
 //
 
 LLAMA_API int32_t llama_model_dflash_selector_top_k(const struct llama_model * model);
+
+// the DFlash variant the model loader picked from the head of the draft
+LLAMA_API enum llama_dflash_variant llama_model_dflash_variant(const struct llama_model * model);
 
 // returns pointer to the target-model layer indices
 LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_model * model);

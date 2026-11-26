@@ -76,6 +76,12 @@ void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
         ggml_backend_tensor_set(tokens, ubatch->token, 0, n_tokens*ggml_element_size(tokens));
     }
 
+    if (ubatch->embd_row && embd_rows) {
+        const int64_t n_tokens = ubatch->n_tokens;
+
+        ggml_backend_tensor_set(embd_rows, ubatch->embd_row, 0, n_tokens*ggml_element_size(embd_rows));
+    }
+
     if (ubatch->embd && embd && !ubatch->is_mixed()) {
         GGML_ASSERT(n_embd == embd->ne[0]);
 
@@ -158,6 +164,20 @@ void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
         ggml_backend_tensor_set(embd, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(h));
     }
 
+    if (h_rows) {
+        GGML_ASSERT(ubatch->data && ubatch->data->embd_state_row.size() == (size_t) n_tokens);
+        ggml_backend_tensor_set(h_rows, ubatch->data->embd_state_row.data(), 0, n_tokens*ggml_element_size(h_rows));
+        return;
+    }
+
+    if (ubatch->embd_state) {
+        // per-token state from llama_batch_ext_set_embd_state(), see llama_batch_ext_select_n_embd_state
+        GGML_ASSERT(n_embd_state == h->ne[0]);
+
+        ggml_backend_tensor_set(h, ubatch->embd_state, 0, n_tokens*n_embd_state*ggml_element_size(h));
+        return;
+    }
+
     if (h_dev && h_src && h_src->host && !ubatch->embd) {
         // the target's rows from its host output buffer, copied on the draft's stream behind its previous pass
         const size_t  row  = h->nb[1];
@@ -215,8 +235,12 @@ bool llm_graph_input_embd_h::can_reuse(const llm_graph_params & params) {
     res &= (!params.ubatch.token) || (tokens && tokens->ne[0] == params.ubatch.n_tokens);
     res &= (!params.ubatch.embd)  || (embd   && embd->ne[1]   == params.ubatch.n_tokens);
     res &= (!params.ubatch.embd)  || (h      && h->ne[1]      == params.ubatch.n_tokens);
+    res &= (!params.ubatch.embd_state) || (h      && h->ne[1]      == params.ubatch.n_tokens);
     // h on the GPU only for a device copy: a graph of one kind is not reused for the other
     res &= h_dev == (h_src && (h_src->src || h_src->host));
+
+    const bool has_rows = params.ubatch.data && !params.ubatch.data->embd_state_row.empty();
+    res &= has_rows == (h_rows != nullptr);
 
     return res;
 }
@@ -1755,6 +1779,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     loras            (params.loras),
     mctx             (params.mctx),
     cross            (params.cross),
+    layer_inp_src    (params.layer_inp_src),
     prec_policy      (params.prec_policy),
     samplers         (params.samplers),
     cb_func          (params.cb),

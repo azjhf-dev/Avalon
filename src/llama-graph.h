@@ -146,6 +146,7 @@ public:
     ggml_tensor * mixed_slots  = nullptr; // I64 [n_tok_rows], mixed path: batch index of the token rows
     ggml_tensor * mixed_embd   = nullptr; // F32 [n_embd, n_batch], mixed path: embd rows, token rows are overwritten
     ggml_tensor * scale_rows   = nullptr; // F32 [1, n_batch], per-row scale: scale_tok for token rows, 1 for embd rows
+    ggml_tensor * embd_rows    = nullptr; // I32 [n_batch], embd row path: rows of ctx_other's layer input device buffer
 
     float scale_tok = 1.0f;
 
@@ -160,7 +161,7 @@ public:
 // similar to llm_graph_input_embd but with an additional hidden state input
 class llm_graph_input_embd_h : public llm_graph_input_i {
 public:
-    llm_graph_input_embd_h(int64_t n_embd) : n_embd(n_embd) {}
+    llm_graph_input_embd_h(int64_t n_embd, int64_t n_embd_state = 0) : n_embd(n_embd), n_embd_state(n_embd_state == 0 ? n_embd : n_embd_state) {}
     virtual ~llm_graph_input_embd_h() = default;
 
     void set_input(const llama_ubatch * ubatch) override;
@@ -169,12 +170,14 @@ public:
 
     ggml_tensor * tokens = nullptr; // I32 [n_batch]
     ggml_tensor * embd   = nullptr; // F32 [n_embd, n_batch]
-    ggml_tensor * h      = nullptr; // F32 [n_embd, n_batch]
+    ggml_tensor * h      = nullptr; // F32 [n_embd_state, n_batch], the host input or the rows gathered with h_rows
+    ggml_tensor * h_rows = nullptr; // I32 [n_batch], rows of the h_nextn device buffer of ctx_state_src, nullptr on the host path
 
     const llama_mtp_h_src * h_src = nullptr; // h copied on the device when its source is set (the MTP draft)
     bool h_dev = false;                      // built for that copy: h on the GPU (graph_get_cb), not reused otherwise
 
-    const int64_t n_embd = 0;
+    const int64_t n_embd       = 0;
+    const int64_t n_embd_state = 0;
 };
 
 class llm_graph_input_pos : public llm_graph_input_i {
@@ -862,6 +865,8 @@ struct llm_graph_params {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
 
+    ggml_tensor * layer_inp_src = nullptr; // ctx_other's layer input device buffer (read)
+
     const llama_prec_policy * prec_policy = nullptr;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
@@ -954,6 +959,7 @@ struct llm_graph_params {
             cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
             cparams.embeddings_nextn_masked == other.cparams.embeddings_nextn_masked &&
             cparams.causal_attn             == other.cparams.causal_attn             &&
+            layer_inp_src == other.layer_inp_src &&
             arch  == other.arch  &&
             gtype == other.gtype &&
             cvec  == other.cvec  &&
@@ -1108,6 +1114,8 @@ struct llm_graph_context {
     const llama_adapter_loras    * loras;
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
+
+    ggml_tensor * layer_inp_src;
 
     const llama_prec_policy * prec_policy;
 

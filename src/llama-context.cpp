@@ -5562,6 +5562,18 @@ void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool valu
     ctx->set_embeddings_layer_inp(lid, value);
 }
 
+void llama_set_embeddings_layer_inp_dev(llama_context * ctx, bool value) {
+    // no layer input device buffer in this fork: speculative falls back to the host copies
+    // (llama_supports_embd_row() returns false and the caller turns this back off)
+    GGML_UNUSED(ctx);
+    GGML_UNUSED(value);
+}
+
+bool llama_supports_embd_row(const llama_context * ctx) {
+    GGML_UNUSED(ctx);
+    return false;
+}
+
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
 }
