@@ -1162,7 +1162,7 @@ void launch_fattn(
     while (mask_root && mask_root->view_src) {
         mask_root = mask_root->view_src;
     }
-    const bool scan_mask = !use_sparse && mask && mask->ne[2] == 1 && mask->ne[1]/ncols1 >= ntiles_x &&
+    const bool scan_mask = !has_bias && !use_sparse && mask && mask->ne[2] == 1 && mask->ne[1]/ncols1 >= ntiles_x &&
         K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1) &&
         mask_root->op != GGML_OP_QSA_SELECT;
     const dim3 blocks_num_KV_max(ntiles_x, Q->ne[3], 1);
